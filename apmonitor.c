@@ -15,7 +15,7 @@
 #include <mosquitto.h>
 
 #define HOSTAPD_SOCKETS "/var/run/hostapd/"
-#define BUF_SIZE 1024
+#define BUF_SIZE (1024)
 
 int fd;
 static struct sigaction sa_int;
@@ -82,7 +82,7 @@ int r;
 r=recv(fd, buf, s, 0);
 if (r>0) {
 	buf[r]=0;
-	parse(buf);
+	return parse(buf);
 }
 if (r<0)
 	perror("recv");
@@ -125,6 +125,8 @@ if (response[0]=='<' && strchr(response,'>')!=NULL) {
 		r=1;
 	else if (strncmp(p+1, "AP-STA-DISCONNECTED", 19)==0)
 		r=2;
+	else if (strncmp(p+1, "AP-DISABLED", 11)==0)
+		return 10;
 	else
 		return -1;
 
@@ -139,7 +141,7 @@ if (response[0]=='<' && strchr(response,'>')!=NULL) {
 	mqtt_publish_info_topic_int(mac, r==2 ? 0 : 1);
 }
 
-return -1;
+return r;
 }
 
 int connect2hostapd(char *interface)
@@ -187,8 +189,9 @@ error:;
 return r;
 }
 
-void main_loop_mqtt()
+int main_loop_mqtt()
 {
+int r=-1;
 fd_set rfds;
 fd_set wfds;
 int port = 1883;
@@ -236,7 +239,9 @@ while (sigint_c==0) {
 
 	if (FD_ISSET(fd, &rfds)) {
 		fprintf(stderr, "h\n");
-		getreply(buf, BUF_SIZE);
+		r=getreply(buf, BUF_SIZE);
+		if (r==10)
+			goto mqtt_out;
 	}
 	if (FD_ISSET(mfd, &rfds)) {
 		fprintf(stderr, "mr\n");
@@ -257,6 +262,8 @@ while (sigint_c==0) {
 mqtt_out:;
 
 mosquitto_destroy(mqtt);
+
+return r;
 }
 
 int main(int argc, char **argv)
@@ -307,9 +314,10 @@ mosquitto_lib_init();
 sendcmd("ATTACH", 6);
 sendcmd("PING", 4);
 
-main_loop_mqtt();
+if (main_loop_mqtt()==0)
+	sendcmd("DETACH", 6);
 
-sendcmd("DETACH", 6);
+close(fd);
 
 unlink(cpath);
 
