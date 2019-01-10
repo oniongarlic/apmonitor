@@ -54,7 +54,17 @@ fprintf(stderr, "[MQTT-%d] %s\n", level, str);
 
 static void mqtt_pub_callback(struct mosquitto *m, void *userdata, int mid)
 {
-fprintf(stderr, "[MQTT-%d]\n", mid);
+fprintf(stderr, "[MQTT-PUB-%d]\n", mid);
+}
+
+static void mqtt_sub_callback(struct mosquitto *m, void *userdata, int mid, int qos, const int *granted_qos)
+{
+fprintf(stderr, "[MQTT-SUB-%d-%d]\n", mid, qos);
+}
+
+static void mqtt_msg_callback(struct mosquitto *m, void *userdata, const struct mosquitto_message *msg)
+{
+fprintf(stderr, "[MQTT-MSG-%d-%d] %s [%s]\n", msg->mid, msg->qos, msg->topic, (char *)msg->payload);
 }
 
 int mqtt_publish_info_topic_int(const char *topic, int value)
@@ -106,7 +116,7 @@ int parse(char *response)
 int r=-1;
 char mac[17];
 
-printf("R: [%s] %d\n", response, strlen(response));
+//printf("R: [%s] %d\n", response, strlen(response));
 
 if (strncmp(response, "OK\n", 3)==0)
 	return 0;
@@ -205,7 +215,9 @@ printf("MQTT Mode: Host: '%s' ID: '%s' Tprefix: '%s'\n", mqtt_host, mqtt_clienti
 mqtt=mosquitto_new(mqtt_clientid, clean_session, NULL);
 
 mosquitto_log_callback_set(mqtt, mqtt_log_callback);
+mosquitto_subscribe_callback_set(mqtt, mqtt_sub_callback);
 mosquitto_publish_callback_set(mqtt, mqtt_pub_callback);
+mosquitto_message_callback_set(mqtt, mqtt_msg_callback);
 
 if (mosquitto_connect(mqtt, mqtt_host, port, keepalive)) {
 	fprintf(stderr, "Unable to connect.\n");
@@ -216,6 +228,12 @@ printf("MQTT Connected, monitoring AP for stations now\n");
 mfd=mosquitto_socket(mqtt);
 if (mfd<0)
 	fprintf(stderr, "Failed to get mosquitto socket!\n");
+
+// hostapd status
+mosquitto_subscribe(mqtt, NULL, "ap/wlan0/status", 0);
+
+// station status
+mosquitto_subscribe(mqtt, NULL, "ap/wlan0/+/status", 0);
 
 while (sigint_c==0) {
 	FD_ZERO(&rfds);
@@ -228,14 +246,11 @@ while (sigint_c==0) {
 	tv.tv_sec = 15;
 	tv.tv_usec = 0;
 
-	fprintf(stderr, "S\n");
 	int r=select(mfd+1, &rfds, NULL /* &wfds */, NULL, &tv);
 	if (r<0) {
 		perror("select");
 		continue;
 	}
-
-	fprintf(stderr, "s\n");
 
 	if (FD_ISSET(fd, &rfds)) {
 		fprintf(stderr, "h\n");
@@ -244,19 +259,17 @@ while (sigint_c==0) {
 			goto mqtt_out;
 	}
 	if (FD_ISSET(mfd, &rfds)) {
-		fprintf(stderr, "mr\n");
+//		fprintf(stderr, "mr\n");
 		mosquitto_loop_read(mqtt, 1);
 	}
 //	if (FD_ISSET(mfd, &rfds) && mosquitto_want_write(mqtt)) {
 	if (mosquitto_want_write(mqtt)) {
-		fprintf(stderr, "mw\n");
+//		fprintf(stderr, "mw\n");
 		mosquitto_loop_write(mqtt, 1);
 	}
 
 //	sendcmd("PING", 4);
 	mosquitto_loop_misc(mqtt);
-
-	printf(".\n");
 }
 
 mqtt_out:;
