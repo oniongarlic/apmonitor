@@ -40,6 +40,7 @@ char *mqtt_topic_prefix=NULL;
 	} while(0)
 
 int parse(char *response);
+int sendcmd(char *cmd, size_t len);
 
 static void sig_handler_sigint(int i)
 {
@@ -65,6 +66,14 @@ fprintf(stderr, "[MQTT-SUB-%d-%d]\n", mid, qos);
 static void mqtt_msg_callback(struct mosquitto *m, void *userdata, const struct mosquitto_message *msg)
 {
 fprintf(stderr, "[MQTT-MSG-%d-%d] %s [%s]\n", msg->mid, msg->qos, msg->topic, (char *)msg->payload);
+
+if (strcmp(msg->topic, "ap/wlan0/status")==0) {
+	if (strncmp(msg->payload, "0", 1)==0)
+		sendcmd("DISABLE", 7);
+	else
+		sendcmd("ENABLE", 6);
+}
+
 }
 
 int mqtt_publish_info_topic_int(const char *topic, int value)
@@ -116,7 +125,7 @@ int parse(char *response)
 int r=-1;
 char mac[17];
 
-//printf("R: [%s] %d\n", response, strlen(response));
+fprintf(stderr, "R: [%s] %d\n", response, strlen(response));
 
 if (strncmp(response, "OK\n", 3)==0)
 	return 0;
