@@ -11,6 +11,7 @@
 #include <sys/un.h>
 #include <sys/select.h>
 
+#include <errno.h>
 
 #include <mosquitto.h>
 
@@ -114,8 +115,10 @@ int sendcmd(char *cmd, size_t len)
 int r;
 
 r=send(fd, cmd, len, 0);
-if (r<0)
+if (r<0) {
 	perror("send");
+	r=-errno;
+}
 
 return r;
 }
@@ -163,15 +166,17 @@ if (response[0]=='<' && strchr(response,'>')!=NULL) {
 return r;
 }
 
-int connect2hostapd(char *interface)
+int connect2hostapd(char *interface, int retry)
 {
 struct sockaddr_un addr;
 struct sockaddr_un laddr;
 int r,fd=-1;
 
 fd=socket(PF_UNIX, SOCK_DGRAM, 0);
-if (fd<0)
+if (fd<0) {
+	perror("socket");
 	goto error;
+}
 
 // XXX use mkdtemp()
 r=snprintf(cpath, sizeof(cpath), "/tmp/monitor-%s-%d", interface, getpid());
@@ -183,8 +188,10 @@ laddr.sun_family = AF_UNIX;
 strncpy(laddr.sun_path, cpath, sizeof(laddr.sun_path)-1);
 
 r=bind(fd, (struct sockaddr *) &laddr, sizeof(struct sockaddr_un));
-if (r<0)
+if (r<0) {
+	perror("bind");
 	goto error;
+}
 
 r=snprintf(spath, sizeof(spath), "%s%s", HOSTAPD_SOCKETS, interface);
 if (r<0)
@@ -194,16 +201,34 @@ memset(&addr, 0, sizeof(struct sockaddr_un));
 addr.sun_family = AF_UNIX;
 strncpy(addr.sun_path, spath, sizeof(addr.sun_path)-1);
 
-r=connect(fd, (struct sockaddr *) &addr, sizeof(struct sockaddr_un));
+do {
+	r=connect(fd, (struct sockaddr *) &addr, sizeof(struct sockaddr_un));
+	if (r<0) {
+		perror("connect");
+		if (errno==ENOENT) {
+			fprintf(stderr, "Could not connect to hostapd, retrying\n");
+			sleep(1);
+		} else {
+			goto error;
+		}
+	} else {
+		break;
+	}
+	retry--;
+} while (retry>0);
+
 if (r<0)
 	goto error;
 
 return fd;
 
 error:;
-	perror("connect2hostapd");
-	if (fd>0)
+	r=-errno;
+	if (fd>0) {
+		shutdown(fd, SHUT_RDWR);
 		close(fd);
+	}
+
 
 return r;
 }
@@ -252,11 +277,11 @@ while (sigint_c==0) {
 	FD_ZERO(&wfds);
 	FD_SET(mfd, &wfds);
 
-	tv.tv_sec = 15;
+	tv.tv_sec = 2;
 	tv.tv_usec = 0;
 
-	int r=select(mfd+1, &rfds, NULL /* &wfds */, NULL, &tv);
-	if (r<0) {
+	int sr=select(mfd+1, &rfds, NULL /* &wfds */, NULL, &tv);
+	if (sr<0) {
 		perror("select");
 		continue;
 	}
@@ -264,8 +289,6 @@ while (sigint_c==0) {
 	if (FD_ISSET(fd, &rfds)) {
 		fprintf(stderr, "h\n");
 		r=getreply(buf, BUF_SIZE);
-		if (r==10)
-			goto mqtt_out;
 	}
 	if (FD_ISSET(mfd, &rfds)) {
 //		fprintf(stderr, "mr\n");
@@ -277,7 +300,14 @@ while (sigint_c==0) {
 		mosquitto_loop_write(mqtt, 1);
 	}
 
-//	sendcmd("PING", 4);
+	if (sr==0) {
+		int scr=sendcmd("PING", 4);
+		if (scr==ECONNREFUSED) {
+			r=scr;
+			goto mqtt_out;
+		}
+	}
+
 	mosquitto_loop_misc(mqtt);
 }
 
@@ -325,7 +355,7 @@ while ((opt = getopt(argc, argv, "t:h:c:i:")) != -1) {
 	}
 }
 
-fd=connect2hostapd(interface);
+fd=connect2hostapd(interface, 10);
 if (fd<0)
 	return 1;
 
@@ -336,8 +366,13 @@ mosquitto_lib_init();
 sendcmd("ATTACH", 6);
 sendcmd("PING", 4);
 
-if (main_loop_mqtt()==0)
+int mr=main_loop_mqtt();
+
+if (mr==0)
 	sendcmd("DETACH", 6);
+else if (mr==ECONNREFUSED) {
+	fprintf(stderr, "Connection to hostapd lost\n");
+}
 
 close(fd);
 
